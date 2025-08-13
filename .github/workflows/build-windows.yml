@@ -6,6 +6,9 @@ on:
     tags: [ "v*" ]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build-windows:
     runs-on: windows-latest
@@ -48,7 +51,7 @@ jobs:
           }
           echo "APP_VERSION=$v" >> $Env:GITHUB_ENV
 
-      - name: Go cache warmup (modules)
+      - name: Go mod download
         run: go mod download
 
       - name: Build goclip.exe (GUI, stripped)
@@ -71,13 +74,15 @@ jobs:
             dist/goclip-${{ env.APP_VERSION }}-windows-amd64.zip
           if-no-files-found: error
 
-      # Optional: auto-create a GitHub Release when building a tag and attach the files
-      - name: Publish GitHub Release
+      - name: Publish GitHub Release (on tag)
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: |
             dist/goclip-windows-amd64.exe
             dist/goclip-${{ env.APP_VERSION }}-windows-amd64.zip
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+          generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
