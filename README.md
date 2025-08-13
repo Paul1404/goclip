@@ -3,6 +3,8 @@
 A tiny Windows tool that types text into **any** focused window (even web/VNC/VM consoles) using **real keyboard events**.  
 Built with [Fyne](https://fyne.io/) for a clean dark-mode GUI.
 
+<img width="820" height="460" alt="image" src="https://github.com/user-attachments/assets/e4328ba2-962e-475d-b0ee-1f7154532147" />
+
 ---
 
 ## Why?
@@ -23,6 +25,18 @@ Some apps and browser-embedded consoles (e.g. VMware/KVM) ignore Unicode paste o
 
 ---
 
+## Example Demo (VMware VM Console)
+- the example shows, how the multilanguage input works
+- the starting point is USA Layout, and a chain of random test comands and at the end a loadkey to change to german keyboard layout
+- then a quick change in the GUI to german target language
+- and firing the same commands again
+- (the purple bar around gui is for always on top)
+![chrome_2025 08 13_20 05_1016](https://github.com/user-attachments/assets/776b43b0-fcda-458e-b40a-13eeacd5600f)
+
+
+
+
+---
 ## Supported keyboard layouts (selector)
 
 - Auto (Use System)
