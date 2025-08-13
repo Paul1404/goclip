@@ -283,7 +283,7 @@ func vkKeyScanEx(r rune, hkl windows.Handle) (vk uint16, shift byte, ok bool) {
 		return 0, 0, false
 	}
 	vk = uint16(byte(v & 0xFF))
-	shift = byte((v >> 8) & 0xFF) // bit0=Shift, bit1=Ctrl, bit2=Alt
+	shift = byte((v >> 8) & 0xFF)
 	return vk, shift, true
 }
 
@@ -327,11 +327,11 @@ func releaseModifiers(shift byte) {
 
 func isExtendedVK(vk uint16) bool {
 	switch vk {
-	case 0x25, 0x26, 0x27, 0x28: // arrows
+	case 0x25, 0x26, 0x27, 0x28:
 		return true
-	case 0x21, 0x22, 0x23, 0x24: // PgUp, PgDn, End, Home
+	case 0x21, 0x22, 0x23, 0x24:
 		return true
-	case 0x2D, 0x2E: // Insert, Delete
+	case 0x2D, 0x2E:
 		return true
 	default:
 		return false
@@ -387,6 +387,15 @@ func sendText(text string, layout string, perCharDelay time.Duration) error {
 		}
 	}
 	return nil
+}
+
+// truncateRunes limits a string to n Unicode code points (runes).
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func main() {
@@ -476,11 +485,13 @@ func main() {
 			if hwnd != 0 {
 				title := strings.TrimSpace(getWindowText(hwnd))
 				if title != "" && title != w.Title() {
+					// apply 255-char rune limit
+					t := truncateRunes(title, 255)
 					laMu.Lock()
 					lastActiveHandle = hwnd
-					lastActiveTitle = title
+					lastActiveTitle = t
 					laMu.Unlock()
-					_ = lastActiveText.Set("Last active: " + title)
+					_ = lastActiveText.Set("Last active: " + t)
 				}
 			}
 			time.Sleep(300 * time.Millisecond)
@@ -526,10 +537,11 @@ func main() {
 			return
 		}
 
-		title := getWindowText(hwnd)
+		title := strings.TrimSpace(getWindowText(hwnd))
 		if title == "" {
 			title = curTitle
 		}
+		title = truncateRunes(title, 255)
 		status.SetText("Typed to: " + title)
 	})
 
