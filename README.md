@@ -1,9 +1,21 @@
+<div align="center">
 <p align="center">
   <img src="assets/logo/app.png" alt="Logo" width="200">
 </p>
 
 
-#  <p style="text-align: center;">goclip</p>
+
+[![GitHub release (latest by date)](https://img.shields.io/github/v/release/wargamer-senpai/goclip?color=blueviolet&logoColor=blueviolet&logo=github&style=flat-square)]()
+[![GitHub all releases](https://img.shields.io/github/downloads/wargamer-senpai/goclip/total?label=Downloads&color=blue&logo=github&logoColor=blue&style=flat-square)]()
+[![GitHub Repo stars](https://img.shields.io/github/stars/wargamer-senpai/goclip?color=lightblue&logoColor=lightblue&logo=github&style=flat-square)]()
+[![GitHub top language](https://img.shields.io/github/languages/top/wargamer-senpai/goclip?color=yellow&logo=python&logoColor=yellow&style=flat-square)]()
+[![GitHub last commit](https://img.shields.io/github/last-commit/wargamer-senpai/goclip?color=brightgreen&logo=git&logoColor=brightgreen&style=flat-square)]()
+[![Build goclip (Windows)](https://github.com/Wargamer-Senpai/goclip/actions/workflows/build-windows.yml/badge.svg)](https://github.com/Wargamer-Senpai/goclip/actions/workflows/build-windows.yml)
+</div>
+
+
+
+# goclip
 
 A tiny Windows tool that types text into **any** focused window (even web/VNC/VM consoles) using **real keyboard events**.  
 Built with [Fyne](https://fyne.io/) for a clean dark-mode GUI.
