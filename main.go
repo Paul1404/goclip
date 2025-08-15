@@ -396,7 +396,7 @@ func truncateRunes(s string, n int) string {
 	if len(r) <= n {
 		return s
 	}
-	return string(r[:n])
+	return string(r[:n]) + "..."
 }
 
 // load ICO from disk and return a Fyne resource
@@ -500,8 +500,8 @@ func main() {
 			if hwnd != 0 {
 				title := strings.TrimSpace(getWindowText(hwnd))
 				if title != "" && title != w.Title() {
-					// apply 255-char rune limit
-					t := truncateRunes(title, 255)
+					// apply 30-char rune limit
+					t := truncateRunes(title, 30)
 					laMu.Lock()
 					lastActiveHandle = hwnd
 					lastActiveTitle = t
@@ -556,7 +556,7 @@ func main() {
 		if title == "" {
 			title = curTitle
 		}
-		title = truncateRunes(title, 255)
+		title = truncateRunes(title, 30)
 		status.SetText("Typed to: " + title)
 	})
 
