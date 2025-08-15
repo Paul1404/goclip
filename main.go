@@ -5,6 +5,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -26,18 +27,23 @@ type windowInfo struct {
 }
 
 var (
-	user32                   = windows.NewLazySystemDLL("user32.dll")
-	procEnumWindows          = user32.NewProc("EnumWindows")
-	procIsWindowVisible      = user32.NewProc("IsWindowVisible")
-	procGetWindowTextW       = user32.NewProc("GetWindowTextW")
-	procGetWindowTextLengthW = user32.NewProc("GetWindowTextLengthW")
-	procGetForegroundWindow  = user32.NewProc("GetForegroundWindow")
-	procSetForegroundWindow  = user32.NewProc("SetForegroundWindow")
-	procSendInput            = user32.NewProc("SendInput")
-	procVkKeyScanExW         = user32.NewProc("VkKeyScanExW")
-	procMapVirtualKeyExW     = user32.NewProc("MapVirtualKeyExW")
-	procLoadKeyboardLayoutW  = user32.NewProc("LoadKeyboardLayoutW")
-	procGetKeyboardLayout    = user32.NewProc("GetKeyboardLayout")
+	user32   = windows.NewLazySystemDLL("user32.dll")
+	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
+
+	procEnumWindows              = user32.NewProc("EnumWindows")
+	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
+	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
+	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
+	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
+	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
+	procSendInput                = user32.NewProc("SendInput")
+	procVkKeyScanExW             = user32.NewProc("VkKeyScanExW")
+	procMapVirtualKeyExW         = user32.NewProc("MapVirtualKeyExW")
+	procLoadKeyboardLayoutW      = user32.NewProc("LoadKeyboardLayoutW")
+	procGetKeyboardLayout        = user32.NewProc("GetKeyboardLayout")
+	procGetWindowThreadProcessId = user32.NewProc("GetWindowThreadProcessId")
+
+	procQueryFullProcessImageNameW = kernel32.NewProc("QueryFullProcessImageNameW")
 )
 
 const (
@@ -53,7 +59,25 @@ const (
 	vkReturn  = 0x0D
 
 	mapvkVKToVSC = 0
+
+	processQueryLimitedInformation = 0x1000
 )
+
+// ---------------- Ignore lists ----------------
+
+var ignoredProcessNamesLower = map[string]struct{}{
+	"goclip.exe": {}, // ignore our own app
+	// add more exe names here if needed, e.g.:
+	// "shellexperiencehost.exe": {},
+}
+
+var ignoredTitleSubstringsLower = []string{
+	"task switch",     // covers “Task Switch”, “Task Switching”
+	"program manager", // desktop shell surface
+	// add any other titles you want to skip
+}
+
+// ------------------------------------------------
 
 type keyboardInput struct {
 	WVK         uint16
@@ -86,7 +110,61 @@ func getWindowText(hwnd windows.Handle) string {
 	return windows.UTF16ToString(buf)
 }
 
-func enumWindows() []windowInfo {
+func getWindowProcessExeBase(hwnd windows.Handle) string {
+	// Get PID for window
+	var pid uint32
+	procGetWindowThreadProcessId.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&pid)))
+	if pid == 0 {
+		return ""
+	}
+	// Open with minimal rights for querying path
+	h, err := windows.OpenProcess(processQueryLimitedInformation, false, pid)
+	if err != nil {
+		return ""
+	}
+	defer windows.CloseHandle(h)
+
+	// QueryFullProcessImageNameW
+	// Buffer length in characters (UTF-16), try a reasonable size
+	buf := make([]uint16, 1024)
+	size := uint32(len(buf))
+	r1, _, _ := procQueryFullProcessImageNameW.Call(
+		uintptr(h),
+		uintptr(0), // flags 0 = Win32 path
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(unsafe.Pointer(&size)),
+	)
+	if r1 == 0 || size == 0 {
+		return ""
+	}
+	full := windows.UTF16ToString(buf[:size])
+	base := strings.ToLower(filepath.Base(full))
+	return base
+}
+
+func shouldIgnoreWindow(hwnd windows.Handle, title string, selfExeLower string) bool {
+	t := strings.ToLower(strings.TrimSpace(title))
+	if t == "" {
+		return true
+	}
+	for _, sub := range ignoredTitleSubstringsLower {
+		if strings.Contains(t, sub) {
+			return true
+		}
+	}
+	exe := getWindowProcessExeBase(hwnd)
+	if exe != "" {
+		if exe == selfExeLower {
+			return true
+		}
+		if _, ok := ignoredProcessNamesLower[exe]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func enumWindows(selfExeLower string) []windowInfo {
 	var wins []windowInfo
 	cb := windows.NewCallback(func(h uintptr, _ uintptr) uintptr {
 		hwnd := windows.Handle(h)
@@ -94,7 +172,7 @@ func enumWindows() []windowInfo {
 			return 1
 		}
 		title := strings.TrimSpace(getWindowText(hwnd))
-		if title == "" {
+		if shouldIgnoreWindow(hwnd, title, selfExeLower) {
 			return 1
 		}
 		wins = append(wins, windowInfo{Hwnd: hwnd, Title: title})
@@ -417,6 +495,10 @@ func main() {
 		myApp.SetIcon(res)
 	}
 
+	// our own exe base name (lower) to avoid listing ourselves
+	selfPath, _ := os.Executable()
+	selfExeLower := strings.ToLower(filepath.Base(selfPath))
+
 	w := myApp.NewWindow("goclip")
 	w.Resize(fyne.NewSize(800, 460))
 
@@ -479,7 +561,7 @@ func main() {
 	})
 
 	refreshWindows := func() {
-		wins := enumWindows()
+		wins := enumWindows(selfExeLower)
 		winOptions = []string{}
 		winMap = map[string]windows.Handle{}
 		for _, wi := range wins {
@@ -499,8 +581,7 @@ func main() {
 			hwnd := getForeground()
 			if hwnd != 0 {
 				title := strings.TrimSpace(getWindowText(hwnd))
-				if title != "" && title != w.Title() {
-					// apply 30-char rune limit
+				if title != "" && title != w.Title() && !shouldIgnoreWindow(hwnd, title, selfExeLower) {
 					t := truncateRunes(title, 30)
 					laMu.Lock()
 					lastActiveHandle = hwnd
