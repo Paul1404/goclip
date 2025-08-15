@@ -63,18 +63,16 @@ const (
 	processQueryLimitedInformation = 0x1000
 )
 
-// ---------------- Ignore lists ----------------
-
+// ---------- Ignore lists (lowercased) ----------
 var ignoredProcessNamesLower = map[string]struct{}{
-	"goclip.exe": {}, // ignore our own app
-	// add more exe names here if needed, e.g.:
-	// "shellexperiencehost.exe": {},
+	"goclip.exe": {}, // ignore itself
+	// add more exe names here if needed, e.g. some.exe
 }
 
 var ignoredTitleSubstringsLower = []string{
 	"task switch",     // covers “Task Switch”, “Task Switching”
 	"program manager", // desktop shell surface
-	// add any other titles you want to skip
+	// add more substrings if needed
 }
 
 // ------------------------------------------------
@@ -138,8 +136,7 @@ func getWindowProcessExeBase(hwnd windows.Handle) string {
 		return ""
 	}
 	full := windows.UTF16ToString(buf[:size])
-	base := strings.ToLower(filepath.Base(full))
-	return base
+	return strings.ToLower(filepath.Base(full))
 }
 
 func shouldIgnoreWindow(hwnd windows.Handle, title string, selfExeLower string) bool {
@@ -468,11 +465,14 @@ func sendText(text string, layout string, perCharDelay time.Duration) error {
 	return nil
 }
 
-// truncateRunes limits a string to n Unicode code points (runes).
+// truncateRunes limits to n runes, appends "..." if truncated.
 func truncateRunes(s string, n int) string {
-	r := []rune(s)
+	r := []rune(strings.TrimSpace(s))
 	if len(r) <= n {
 		return s
+	}
+	if n <= 3 {
+		return string(r[:n])
 	}
 	return string(r[:n]) + "..."
 }
@@ -565,7 +565,8 @@ func main() {
 		winOptions = []string{}
 		winMap = map[string]windows.Handle{}
 		for _, wi := range wins {
-			label := fmt.Sprintf("%s (0x%X)", wi.Title, uintptr(wi.Hwnd))
+			short := truncateRunes(wi.Title, 30) // ← limit to 30 chars in list
+			label := fmt.Sprintf("%s (0x%X)", short, uintptr(wi.Hwnd))
 			winOptions = append(winOptions, label)
 			winMap[label] = wi.Hwnd
 		}
