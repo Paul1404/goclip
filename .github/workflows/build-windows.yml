@@ -67,7 +67,7 @@ jobs:
             throw "goversioninfo not found at $goversioninfo"
           }
           # Creates resource.syso in the repo root. Go picks this up automatically on windows build.
-          & $goversioninfo -icon=assets\logo\app.ico -64 -platform-specific
+          & $goversioninfo -icon="assets/logo/app.ico" -64 -platform-specific
 
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
