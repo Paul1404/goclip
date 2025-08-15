@@ -65,49 +65,26 @@ jobs:
         shell: pwsh
         run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
 
-      - name: Generate versioninfo.json
-        shell: pwsh
-        run: |
-          $raw = "${{ env.APP_VERSION }}".TrimStart('v')
-          if ($raw -match '^(\d+)\.(\d+)\.(\d+)$') {
-            $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = [int]$Matches[3]
-          } else {
-            $maj = 0; $min = 0; $pat = 0
-          }
-          $build = 0
-          $verStr = "$maj.$min.$pat.$build"
-          $json = @{
-            FixedFileInfo = @{
-              FileVersion    = @{ Major = $maj; Minor = $min; Patch = $pat; Build = $build }
-              ProductVersion = @{ Major = $maj; Minor = $min; Patch = $pat; Build = $build }
-              FileFlagsMask  = "3f"
-              FileFlags      = "00"
-              FileOS         = "040004"
-              FileType       = "01"
-              FileSubType    = "00"
-            }
-            StringFileInfo = @{
-              FileDescription  = "goclip"
-              InternalName     = "goclip"
-              OriginalFilename = "goclip.exe"
-              ProductName      = "goclip"
-              FileVersion      = $verStr
-              ProductVersion   = $verStr
-            }
-            VarFileInfo = @{ Translation = @(1033,1200) }
-            IconPath = "assets\\logo\\app.ico"
-          } | ConvertTo-Json -Depth 6
-          $json | Out-File -Encoding utf8 versioninfo.json
-          Write-Host "versioninfo.json:"
-          Get-Content versioninfo.json
-
-      - name: Generate Windows resources (-> resource.syso)
+      - name: Generate Windows resources (icon + version -> resource.syso)
         shell: pwsh
         run: |
           $gv = Join-Path (go env GOPATH) 'bin/goversioninfo.exe'
           if (-not (Test-Path $gv)) { throw "goversioninfo not found at $gv" }
           Get-ChildItem -Filter "resource*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-          & $gv -platform-specific versioninfo.json
+          $raw = "${Env:APP_VERSION}".TrimStart('v')
+          if ($raw -match '^(\d+)\.(\d+)\.(\d+)$') {
+            $ver = "$($Matches[1]).$($Matches[2]).$($Matches[3]).0"
+          } else {
+            $ver = "0.0.0.0"
+          }
+          & $gv -platform-specific -64 `
+            -icon "assets/logo/app.ico" `
+            -product-name "goclip" `
+            -description "goclip" `
+            -original-name "goclip.exe" `
+            -internal-name "goclip" `
+            -product-version $ver `
+            -file-version $ver
 
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
