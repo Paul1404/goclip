@@ -545,6 +545,7 @@ func main() {
 		status.SetText("Typed to: " + title)
 	})
 
+	// Left side: window selector + buttons
 	left := container.NewVBox(
 		widget.NewLabelWithStyle("Target Window", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		container.NewHBox(windowSelect, clearBtn),
@@ -552,14 +553,13 @@ func main() {
 		lastActiveLabel,
 	)
 
+	// Right side: layout selector
 	right := container.NewVBox(
 		widget.NewLabelWithStyle("Keyboard Layout", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		layoutSelect,
 	)
 
-	header := container.NewBorder(nil, nil, left, right,
-		widget.NewLabelWithStyle("goclip", fyne.TextAlignCenter, fyne.TextStyle{Bold: true}),
-	)
+	header := container.NewBorder(nil, nil, left, right, nil)
 
 	body := container.NewVBox(
 		widget.NewLabelWithStyle("Text to type", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
