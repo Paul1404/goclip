@@ -19,7 +19,12 @@ import (
 	"fyne.io/fyne/v2/theme"
 	"fyne.io/fyne/v2/widget"
 	"golang.org/x/sys/windows"
+
+	_ "embed"
 )
+
+//go:embed assets/logo/app.ico
+var embeddedAppIco []byte
 
 type windowInfo struct {
 	Hwnd  windows.Handle
@@ -477,20 +482,24 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n]) + "..."
 }
 
-// load ICO from disk and return a Fyne resource
+// load ICO from embedded bytes, with a dev-time disk fallback
 func loadAppIcon() fyne.Resource {
-	data, err := os.ReadFile("assets/logo/app.ico")
-	if err != nil {
-		return nil
+	if len(embeddedAppIco) > 0 {
+		return fyne.NewStaticResource("app.ico", embeddedAppIco)
 	}
-	return fyne.NewStaticResource("app.ico", data)
+	// fallback for `go run` from source
+	data, err := os.ReadFile("assets/logo/app.ico")
+	if err == nil {
+		return fyne.NewStaticResource("app.ico", data)
+	}
+	return nil
 }
 
 func main() {
 	myApp := app.New()
 	myApp.Settings().SetTheme(theme.DarkTheme())
 
-	// set runtime icon (taskbar/window)
+	// set runtime icon (taskbar/window) from embedded resource
 	if res := loadAppIcon(); res != nil {
 		myApp.SetIcon(res)
 	}
@@ -501,6 +510,11 @@ func main() {
 
 	w := myApp.NewWindow("goclip")
 	w.Resize(fyne.NewSize(800, 460))
+
+	// also set it on the window explicitly
+	if res := loadAppIcon(); res != nil {
+		w.SetIcon(res)
+	}
 
 	inputEntry := widget.NewMultiLineEntry()
 	inputEntry.SetPlaceHolder("Type here…")
