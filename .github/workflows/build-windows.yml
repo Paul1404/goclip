@@ -81,6 +81,7 @@ jobs:
             -icon "assets/logo/app.ico" `
             -product-name "goclip" `
             -description "goclip" `
+            -skip-versioninfo `
             -original-name "goclip.exe" `
             -internal-name "goclip" `
             -product-version $ver `
