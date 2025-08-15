@@ -1,4 +1,9 @@
-# goclip
+<p align="center">
+  <img src="assets/logo/app.png" alt="Logo" width="200">
+</p>
+
+
+#  <p style="text-align: center;">goclip</p>
 
 A tiny Windows tool that types text into **any** focused window (even web/VNC/VM consoles) using **real keyboard events**.  
 Built with [Fyne](https://fyne.io/) for a clean dark-mode GUI.
@@ -21,7 +26,7 @@ Some apps and browser-embedded consoles (e.g. VMware/KVM) ignore Unicode paste o
   - Sends **scan codes** with modifiers (Shift/Ctrl/Alt) for each character.
   - **Unicode fallback** for unmappable characters.
 - 🕶️ **Modern dark-mode GUI** (Fyne)
-- ⚙️ **No install required** – single `.exe`
+- ⚙️ **No install required** – single portable `.exe`
 
 ---
 
