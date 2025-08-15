@@ -54,6 +54,21 @@ jobs:
       - name: Go mod download
         run: go mod download
 
+      - name: Install goversioninfo (for embedding icon)
+        shell: pwsh
+        run: |
+          go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+
+      - name: Generate Windows resources (icon -> resource.syso)
+        shell: pwsh
+        run: |
+          $goversioninfo = Join-Path (go env GOPATH) 'bin\goversioninfo.exe'
+          if (-not (Test-Path $goversioninfo)) {
+            throw "goversioninfo not found at $goversioninfo"
+          }
+          # Creates resource.syso in the repo root. Go picks this up automatically on windows build.
+          & $goversioninfo -icon=assets\logo\app.ico -64 -platform-specific
+
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
         run: |
