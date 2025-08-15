@@ -59,15 +59,40 @@ jobs:
         run: |
           go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
 
-      - name: Generate Windows resources (icon -> resource.syso)
+      # Create versioninfo.json so goversioninfo has explicit config (incl. icon)
+      - name: Generate versioninfo.json
         shell: pwsh
         run: |
-          $goversioninfo = Join-Path (go env GOPATH) 'bin\goversioninfo.exe'
-          if (-not (Test-Path $goversioninfo)) {
-            throw "goversioninfo not found at $goversioninfo"
-          }
-          # Creates resource.syso in the repo root. Go picks this up automatically on windows build.
-          & $goversioninfo -icon="assets/logo/app.ico" -64 -platform-specific
+          $v = "${{ env.APP_VERSION }}".TrimStart('v')
+          if ($v -notmatch '^\d+\.\d+\.\d+$') { $v = '0.0.0' }
+          $json = @{
+            FixedFileInfo = @{
+              FileVersion    = "$v.0"
+              ProductVersion = "$v.0"
+              FileFlagsMask  = "3f"
+              FileFlags      = "00"
+              FileOS         = "040004"
+              FileType       = "01"
+              FileSubType    = "00"
+            }
+            StringFileInfo = @{
+              FileDescription  = "goclip"
+              InternalName     = "goclip"
+              OriginalFilename = "goclip.exe"
+              ProductName      = "goclip"
+            }
+            VarFileInfo = @{ Translation = @(1033,1200) }
+            IconPath = "assets\\logo\\app.ico"
+          } | ConvertTo-Json -Depth 6
+          $json | Out-File -Encoding utf8 versioninfo.json
+
+      - name: Generate Windows resources (icon + version -> resource.syso)
+        shell: pwsh
+        run: |
+          $gv = Join-Path (go env GOPATH) 'bin/goversioninfo.exe'
+          if (-not (Test-Path $gv)) { throw "goversioninfo not found at $gv" }
+          Get-ChildItem -Filter "resource*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+          & $gv -in=versioninfo.json -platform-specific
 
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
