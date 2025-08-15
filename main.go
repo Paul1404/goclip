@@ -4,6 +4,7 @@ package main
 
 import (
 	"fmt"
+	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -398,9 +399,23 @@ func truncateRunes(s string, n int) string {
 	return string(r[:n])
 }
 
+// load ICO from disk and return a Fyne resource
+func loadAppIcon() fyne.Resource {
+	data, err := os.ReadFile("assets/logo/app.ico")
+	if err != nil {
+		return nil
+	}
+	return fyne.NewStaticResource("app.ico", data)
+}
+
 func main() {
 	myApp := app.New()
 	myApp.Settings().SetTheme(theme.DarkTheme())
+
+	// set runtime icon (taskbar/window)
+	if res := loadAppIcon(); res != nil {
+		myApp.SetIcon(res)
+	}
 
 	w := myApp.NewWindow("goclip")
 	w.Resize(fyne.NewSize(800, 460))
