@@ -54,21 +54,32 @@ jobs:
       - name: Go mod download
         run: go mod download
 
-      - name: Install goversioninfo (for embedding icon)
+      - name: Verify icon exists
         shell: pwsh
         run: |
-          go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+          if (-not (Test-Path "assets/logo/app.ico")) {
+            throw "Icon not found at assets/logo/app.ico"
+          }
 
-      # Create versioninfo.json so goversioninfo has explicit config (incl. icon)
+      - name: Install goversioninfo (for embedding icon)
+        shell: pwsh
+        run: go install github.com/josephspurrier/goversioninfo/cmd/goversioninfo@latest
+
       - name: Generate versioninfo.json
         shell: pwsh
         run: |
-          $v = "${{ env.APP_VERSION }}".TrimStart('v')
-          if ($v -notmatch '^\d+\.\d+\.\d+$') { $v = '0.0.0' }
+          $raw = "${{ env.APP_VERSION }}".TrimStart('v')
+          if ($raw -match '^(\d+)\.(\d+)\.(\d+)$') {
+            $maj = [int]$Matches[1]; $min = [int]$Matches[2]; $pat = [int]$Matches[3]
+          } else {
+            $maj = 0; $min = 0; $pat = 0
+          }
+          $build = 0
+          $verStr = "$maj.$min.$pat.$build"
           $json = @{
             FixedFileInfo = @{
-              FileVersion    = "$v.0"
-              ProductVersion = "$v.0"
+              FileVersion    = @{ Major = $maj; Minor = $min; Patch = $pat; Build = $build }
+              ProductVersion = @{ Major = $maj; Minor = $min; Patch = $pat; Build = $build }
               FileFlagsMask  = "3f"
               FileFlags      = "00"
               FileOS         = "040004"
@@ -80,19 +91,23 @@ jobs:
               InternalName     = "goclip"
               OriginalFilename = "goclip.exe"
               ProductName      = "goclip"
+              FileVersion      = $verStr
+              ProductVersion   = $verStr
             }
             VarFileInfo = @{ Translation = @(1033,1200) }
             IconPath = "assets\\logo\\app.ico"
           } | ConvertTo-Json -Depth 6
           $json | Out-File -Encoding utf8 versioninfo.json
+          Write-Host "versioninfo.json:"
+          Get-Content versioninfo.json
 
-      - name: Generate Windows resources (icon + version -> resource.syso)
+      - name: Generate Windows resources (-> resource.syso)
         shell: pwsh
         run: |
           $gv = Join-Path (go env GOPATH) 'bin/goversioninfo.exe'
           if (-not (Test-Path $gv)) { throw "goversioninfo not found at $gv" }
           Get-ChildItem -Filter "resource*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-          & $gv -platform-specific -icon "assets/logo/app.ico"
+          & $gv -platform-specific versioninfo.json
 
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
