@@ -92,7 +92,7 @@ jobs:
           $gv = Join-Path (go env GOPATH) 'bin/goversioninfo.exe'
           if (-not (Test-Path $gv)) { throw "goversioninfo not found at $gv" }
           Get-ChildItem -Filter "resource*.syso" -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-          & $gv -in=versioninfo.json -platform-specific
+          & $gv -platform-specific -icon "assets/logo/app.ico"
 
       - name: Build goclip.exe (GUI, stripped)
         shell: pwsh
