@@ -516,9 +516,26 @@ func main() {
 		w.SetIcon(res)
 	}
 
+	// --- Input field with Hide/Show (eye) toggle ---
 	inputEntry := widget.NewMultiLineEntry()
 	inputEntry.SetPlaceHolder("Type here…")
 	inputEntry.Wrapping = fyne.TextWrapWord
+
+	masked := false
+	var eyeBtn *widget.Button
+	eyeBtn = widget.NewButtonWithIcon("", theme.VisibilityIcon(), func() {
+		masked = !masked
+		inputEntry.Password = masked
+		if masked {
+			eyeBtn.SetIcon(theme.VisibilityOffIcon())
+		} else {
+			eyeBtn.SetIcon(theme.VisibilityIcon())
+		}
+		inputEntry.Refresh()
+	})
+	eyeBtn.Importance = widget.LowImportance
+
+	inputRow := container.NewBorder(nil, nil, nil, eyeBtn, inputEntry)
 
 	status := widget.NewLabel("Ready.")
 	status.Wrapping = fyne.TextWrapWord
@@ -674,7 +691,7 @@ func main() {
 
 	body := container.NewVBox(
 		widget.NewLabelWithStyle("Text to type", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
-		inputEntry,
+		inputRow,
 		container.NewHBox(typeBtn),
 		status,
 	)
