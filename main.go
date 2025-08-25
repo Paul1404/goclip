@@ -133,7 +133,7 @@ func getWindowProcessExeBase(hwnd windows.Handle) string {
 	size := uint32(len(buf))
 	r1, _, _ := procQueryFullProcessImageNameW.Call(
 		uintptr(h),
-		uintptr(0), // flags 0 = Win32 path
+		uintptr(0),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&size)),
 	)
@@ -673,6 +673,53 @@ func main() {
 		status.SetText("Typed to: " + title)
 	})
 
+	typeClipboardBtn := widget.NewButton("Type Clipboard", func() {
+		selected := windowSelect.Selected
+
+		laMu.RLock()
+		curH := lastActiveHandle
+		curTitle := lastActiveTitle
+		laMu.RUnlock()
+
+		var hwnd windows.Handle
+		if selected == "" {
+			hwnd = curH
+		} else {
+			var ok bool
+			hwnd, ok = winMap[selected]
+			if !ok || hwnd == 0 {
+				status.SetText("Selected window is no longer available.")
+				return
+			}
+		}
+
+		if hwnd == 0 {
+			status.SetText("No window focused yet. Click a window then come back.")
+			return
+		}
+
+		setForegroundWindow(hwnd)
+		time.Sleep(150 * time.Millisecond)
+
+		txt := w.Clipboard().Content()
+		if txt == "" {
+			status.SetText("Clipboard is empty.")
+			return
+		}
+
+		if err := sendText(txt, layoutSelect.Selected, 7*time.Millisecond); err != nil {
+			status.SetText("Error typing clipboard: " + err.Error())
+			return
+		}
+
+		title := strings.TrimSpace(getWindowText(hwnd))
+		if title == "" {
+			title = curTitle
+		}
+		title = truncateRunes(title, 30)
+		status.SetText("Typed clipboard to: " + title)
+	})
+
 	// Left side: window selector + buttons
 	left := container.NewVBox(
 		widget.NewLabelWithStyle("Target Window", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
@@ -692,7 +739,7 @@ func main() {
 	body := container.NewVBox(
 		widget.NewLabelWithStyle("Text to type", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		inputRow,
-		container.NewHBox(typeBtn),
+		container.NewHBox(typeBtn, typeClipboardBtn),
 		status,
 	)
 
