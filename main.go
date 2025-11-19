@@ -12,6 +12,9 @@ import (
 	"time"
 	"unsafe"
 
+	// #include <windows.h>
+	"C"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
@@ -31,6 +34,23 @@ type windowInfo struct {
 	Title string
 }
 
+// Pool of UTF-16 buffers for GetWindowText
+var windowTextBufPool = sync.Pool{
+	New: func() any {
+		// Most window titles are well under 256 runes, so 512 UTF-16 chars suffices
+		buf := make([]uint16, 512)
+		return &buf
+	},
+}
+
+// Pool of UTF-16 buffers for QueryFullProcessImageNameW
+var exePathBufPool = sync.Pool{
+	New: func() any {
+		buf := make([]uint16, 1024) // ~2KB default, enough for most paths
+		return &buf
+	},
+}
+
 var (
 	user32   = windows.NewLazySystemDLL("user32.dll")
 	kernel32 = windows.NewLazySystemDLL("kernel32.dll")
@@ -39,7 +59,6 @@ var (
 	procIsWindowVisible          = user32.NewProc("IsWindowVisible")
 	procGetWindowTextW           = user32.NewProc("GetWindowTextW")
 	procGetWindowTextLengthW     = user32.NewProc("GetWindowTextLengthW")
-	procGetForegroundWindow      = user32.NewProc("GetForegroundWindow")
 	procSetForegroundWindow      = user32.NewProc("SetForegroundWindow")
 	procSendInput                = user32.NewProc("SendInput")
 	procVkKeyScanExW             = user32.NewProc("VkKeyScanExW")
@@ -97,6 +116,89 @@ type input struct {
 	_pad2 uint64
 }
 
+// ------------------------- ForegroundWatcher.go -------------------------
+//
+// Foreground window watcher using Windows SetWinEventHook API.
+// Replaces polling loop with an event-driven system.
+//
+// Monitors EVENT_SYSTEM_FOREGROUND and calls the user-provided callback
+// whenever the active/focused window changes.
+//
+
+var (
+	procSetWinEventHook = user32.NewProc("SetWinEventHook")
+	procUnhookWinEvent  = user32.NewProc("UnhookWinEvent")
+
+	// handle to the installed hook, needed for cleanup
+	foregroundEventHook windows.Handle
+
+	// prevent GC of the callback by holding reference globally
+	foregroundCallbackRef uintptr
+)
+
+const (
+	eventSystemForeground = 0x0003
+	winEventOutOfContext  = 0x0000
+)
+
+// startForegroundWatcher sets up a WinEventHook for EVENT_SYSTEM_FOREGROUND.
+// It accepts the executable name of this process (lower-cased, to skip self),
+// and a callback function to notify when the foreground window changes.
+func startForegroundWatcher(
+	selfExeLower string,
+	onChange func(hwnd windows.Handle, title string),
+) error {
+	// Wrap the callback in a syscall callback
+	cb := windows.NewCallback(func(
+		hWinEventHook uintptr,
+		event uint32,
+		hwnd uintptr,
+		idObject, idChild, idThread, dwmsEventTime uintptr,
+	) uintptr {
+		if hwnd == 0 {
+			return 0
+		}
+
+		h := windows.Handle(hwnd)
+		title := strings.TrimSpace(getWindowText(h))
+
+		// Call client callback only if meaningful
+		if title != "" && !shouldIgnoreWindow(h, title, selfExeLower) {
+			onChange(h, title)
+		}
+		return 0
+	})
+
+	// GC safekeeping
+	foregroundCallbackRef = cb
+
+	// Install the Windows hook
+	r, _, err := procSetWinEventHook.Call(
+		uintptr(eventSystemForeground), // eventMin
+		uintptr(eventSystemForeground), // eventMax
+		0,                              // hModule (not using DLL injection)
+		cb,                             // callback
+		0,                              // processId
+		0,                              // threadId
+		uintptr(winEventOutOfContext),  // flags -> don't inject into processes
+	)
+	if r == 0 {
+		return fmt.Errorf("SetWinEventHook failed: %v", err)
+	}
+	foregroundEventHook = windows.Handle(r)
+	return nil
+}
+
+// stopForegroundWatcher removes the foreground watcher hook.
+// Should be called at program exit.
+func stopForegroundWatcher() {
+	if foregroundEventHook != 0 {
+		procUnhookWinEvent.Call(uintptr(foregroundEventHook))
+		foregroundEventHook = 0
+	}
+	foregroundCallbackRef = 0
+}
+
 func isWindowVisible(hwnd windows.Handle) bool {
 	r, _, _ := procIsWindowVisible.Call(uintptr(hwnd))
 	return r != 0
@@ -108,9 +210,34 @@ func getWindowText(hwnd windows.Handle) string {
 	if length == 0 {
 		return ""
 	}
-	buf := make([]uint16, length+1)
-	procGetWindowTextW.Call(uintptr(hwnd), uintptr(unsafe.Pointer(&buf[0])), uintptr(length+1))
-	return windows.UTF16ToString(buf)
+
+	// get buffer from pool
+	p := windowTextBufPool.Get().(*[]uint16)
+	buf := *p
+
+	// if too small, grow (don’t return shrunk buffer to pool)
+	if cap(buf) < length+1 {
+		buf = make([]uint16, length+1)
+	} else {
+		buf = buf[:length+1]
+	}
+
+	// call GetWindowTextW
+	procGetWindowTextW.Call(
+		uintptr(hwnd),
+		uintptr(unsafe.Pointer(&buf[0])),
+		uintptr(length+1),
+	)
+
+	// convert to string
+	text := windows.UTF16ToString(buf[:length])
+
+	// put buffer back if it's a reasonable size
+	if cap(buf) <= 4096 {
+		windowTextBufPool.Put(&buf)
+	}
+
+	return text
 }
 
 func getWindowProcessExeBase(hwnd windows.Handle) string {
@@ -120,28 +247,38 @@ func getWindowProcessExeBase(hwnd windows.Handle) string {
 	if pid == 0 {
 		return ""
 	}
-	// Open with minimal rights for querying path
+
+	// Open process with minimal rights
 	h, err := windows.OpenProcess(processQueryLimitedInformation, false, pid)
 	if err != nil {
 		return ""
 	}
 	defer windows.CloseHandle(h)
 
-	// QueryFullProcessImageNameW
-	// Buffer length in characters (UTF-16), try a reasonable size
-	buf := make([]uint16, 1024)
+	// Get buffer from pool
+	p := exePathBufPool.Get().(*[]uint16)
+	buf := *p
 	size := uint32(len(buf))
+
+	// Query the full process path
 	r1, _, _ := procQueryFullProcessImageNameW.Call(
 		uintptr(h),
 		uintptr(0),
 		uintptr(unsafe.Pointer(&buf[0])),
 		uintptr(unsafe.Pointer(&size)),
 	)
-	if r1 == 0 || size == 0 {
-		return ""
+
+	var exe string
+	if r1 != 0 && size > 0 {
+		exe = strings.ToLower(filepath.Base(windows.UTF16ToString(buf[:size])))
 	}
-	full := windows.UTF16ToString(buf[:size])
-	return strings.ToLower(filepath.Base(full))
+
+	// Put back if not grown too large
+	if cap(buf) <= 8192 { // e.g. ~16KB characters ~32KB memory
+		exePathBufPool.Put(&buf)
+	}
+
+	return exe
 }
 
 func shouldIgnoreWindow(hwnd windows.Handle, title string, selfExeLower string) bool {
@@ -185,11 +322,6 @@ func enumWindows(selfExeLower string) []windowInfo {
 		return strings.ToLower(wins[i].Title) < strings.ToLower(wins[j].Title)
 	})
 	return wins
-}
-
-func getForeground() windows.Handle {
-	h, _, _ := procGetForegroundWindow.Call()
-	return windows.Handle(h)
 }
 
 func setForegroundWindow(hwnd windows.Handle) bool {
@@ -452,10 +584,16 @@ func sendCharPhysical(r rune, hkl windows.Handle, perCharDelay time.Duration) er
 	return nil
 }
 
-func sendText(text string, layout string, perCharDelay time.Duration) error {
+func sendText(text string, layout string, perCharDelay time.Duration, shouldStop func() bool) error {
 	hkl := loadHKLByName(layout)
 	text = strings.ReplaceAll(text, "\r\n", "\n")
+
 	for _, r := range text {
+		if shouldStop != nil && shouldStop() {
+			// cancelled by user
+			return nil
+		}
+
 		if r == '\n' {
 			if err := sendEnter(hkl); err != nil {
 				return err
@@ -463,10 +601,12 @@ func sendText(text string, layout string, perCharDelay time.Duration) error {
 			time.Sleep(perCharDelay)
 			continue
 		}
+
 		if err := sendCharPhysical(r, hkl, perCharDelay); err != nil {
 			return err
 		}
 	}
+
 	return nil
 }
 
@@ -572,6 +712,117 @@ func main() {
 	}, nil)
 	layoutSelect.Selected = "Auto (Use System)"
 
+	// --- Typing speed controls (dropdown + optional custom ms field) ---
+	speedSelect := widget.NewSelect([]string{
+		"Default (Auto)",
+		"Medium (50 ms)",
+		"Slow (100 ms)",
+		"Super Slow (250 ms)",
+		"Custom",
+	}, nil)
+	speedSelect.Selected = "Default (Auto)"
+
+	customMsEntry := widget.NewEntry()
+	customMsEntry.SetPlaceHolder("ms per char")
+	customMsEntry.Hide() // start hidden unless Custom is selected
+
+	// Dynamic per-character delay selection
+	getPerCharDelay := func(text string) time.Duration {
+		switch speedSelect.Selected {
+		case "Default (Auto)":
+			runeCount := 0
+			lines := 1
+			for _, ch := range text {
+				runeCount++
+				if ch == '\n' {
+					lines++
+				}
+			}
+
+			// For very short snippets, no delay
+			if runeCount <= 200 && lines <= 5 {
+				return 0
+			}
+
+			// Base delay from line count (more lines -> more delay)
+			msByLines := lines
+
+			// Additional delay from character count (large blocks with few newlines)
+			msByChars := runeCount / 200 // 200 chars per 1 ms
+
+			ms := msByLines
+			if msByChars > ms {
+				ms = msByChars
+			}
+
+			if ms < 10 {
+				ms = 10
+			}
+			if ms > 50 {
+				ms = 50
+			}
+
+			return time.Duration(ms) * time.Millisecond
+
+		case "Medium (50 ms)":
+			return 50 * time.Millisecond
+		case "Slow (100 ms)":
+			return 100 * time.Millisecond
+		case "Super Slow (250 ms)":
+			return 250 * time.Millisecond
+		case "Custom":
+			v := strings.TrimSpace(customMsEntry.Text)
+			if v == "" {
+				return 0
+			}
+			var acc int64
+			for _, ch := range v {
+				if ch < '0' || ch > '9' {
+					return 0
+				}
+				acc = acc*10 + int64(ch-'0')
+				if acc > 10000 {
+					acc = 10000
+					break
+				}
+			}
+			return time.Duration(acc) * time.Millisecond
+		default:
+			return 0
+		}
+	}
+
+	// Display for current delay (only shown for Default (Auto))
+	delayLabel := widget.NewLabel("Per-character delay: 0 ms")
+
+	updateDelayLabel := func() {
+		if speedSelect.Selected != "Default (Auto)" {
+			delayLabel.Hide()
+			return
+		}
+		delayLabel.Show()
+		d := getPerCharDelay(inputEntry.Text)
+		ms := d.Milliseconds()
+		delayLabel.SetText(fmt.Sprintf("Per-character delay: %d ms", ms))
+	}
+
+	speedSelect.OnChanged = func(s string) {
+		if s == "Custom" {
+			customMsEntry.Show()
+		} else {
+			customMsEntry.Hide()
+		}
+		updateDelayLabel()
+	}
+
+	customMsEntry.OnChanged = func(s string) {
+		updateDelayLabel()
+	}
+
+	inputEntry.OnChanged = func(s string) {
+		updateDelayLabel()
+	}
+
 	winOptions := []string{}
 	winMap := map[string]windows.Handle{}
 
@@ -596,7 +847,7 @@ func main() {
 		winOptions = []string{}
 		winMap = map[string]windows.Handle{}
 		for _, wi := range wins {
-			short := truncateRunes(wi.Title, 30) // ← limit to 30 chars in list
+			short := truncateRunes(wi.Title, 30) // limit to 30 chars in list
 			label := fmt.Sprintf("%s (0x%X)", short, uintptr(wi.Hwnd))
 			winOptions = append(winOptions, label)
 			winMap[label] = wi.Hwnd
@@ -608,25 +859,72 @@ func main() {
 
 	refreshBtn := widget.NewButton("Refresh windows", refreshWindows)
 
-	go func() {
-		for {
-			hwnd := getForeground()
-			if hwnd != 0 {
-				title := strings.TrimSpace(getWindowText(hwnd))
-				if title != "" && title != w.Title() && !shouldIgnoreWindow(hwnd, title, selfExeLower) {
-					t := truncateRunes(title, 30)
-					laMu.Lock()
-					lastActiveHandle = hwnd
-					lastActiveTitle = t
-					laMu.Unlock()
-					_ = lastActiveText.Set("Last active: " + t)
-				}
-			}
-			time.Sleep(300 * time.Millisecond)
-		}
-	}()
+	// Start event-driven watcher of foreground windows
+	err := startForegroundWatcher(selfExeLower, func(hwnd windows.Handle, title string) {
+		t := truncateRunes(title, 30)
 
-	typeBtn := widget.NewButton("Type", func() {
+		laMu.Lock()
+		lastActiveHandle = hwnd
+		lastActiveTitle = t
+		laMu.Unlock()
+
+		_ = lastActiveText.Set("Last active: " + t)
+	})
+	if err != nil {
+		status.SetText("Warning: foreground watcher failed, falling back: " + err.Error())
+	}
+
+	// Ensure cleanup when main exits
+	defer stopForegroundWatcher()
+
+	// --- Typing state / stop handling ---
+	var typingMu sync.Mutex
+	typingStopRequested := false
+
+	setStopRequested := func(v bool) {
+		typingMu.Lock()
+		typingStopRequested = v
+		typingMu.Unlock()
+	}
+
+	shouldStop := func() bool {
+		typingMu.Lock()
+		v := typingStopRequested
+		typingMu.Unlock()
+		return v
+	}
+
+	var typeBtn *widget.Button
+	var typeClipboardBtn *widget.Button
+	var stopBtn *widget.Button
+	var actionContainer *fyne.Container
+
+	setTypingUI := func(active bool) {
+		if actionContainer == nil {
+			return
+		}
+		if active {
+			if stopBtn != nil {
+				actionContainer.Objects = []fyne.CanvasObject{stopBtn}
+				actionContainer.Refresh()
+			}
+		} else {
+			if typeBtn != nil && typeClipboardBtn != nil {
+				actionContainer.Objects = []fyne.CanvasObject{typeBtn, typeClipboardBtn}
+				actionContainer.Refresh()
+			}
+		}
+	}
+
+	// Stop button (shown while typing)
+	stopBtn = widget.NewButton("Stop", func() {
+		setStopRequested(true)
+		status.SetText("Stopping typing...")
+	})
+	stopBtn.Importance = widget.DangerImportance
+
+	// --- Type Button ---
+	typeBtn = widget.NewButton("Type", func() {
 		selected := windowSelect.Selected
 
 		laMu.RLock()
@@ -660,20 +958,37 @@ func main() {
 			return
 		}
 
-		if err := sendText(txt, layoutSelect.Selected, 7*time.Millisecond); err != nil {
-			status.SetText("Error typing: " + err.Error())
-			return
-		}
+		perChar := getPerCharDelay(txt)
+		setStopRequested(false)
+		setTypingUI(true)
+		status.SetText("Typing...")
 
-		title := strings.TrimSpace(getWindowText(hwnd))
-		if title == "" {
-			title = curTitle
-		}
-		title = truncateRunes(title, 30)
-		status.SetText("Typed to: " + title)
+		go func(hwnd windows.Handle, curTitle string, txt string, perChar time.Duration) {
+			err := sendText(txt, layoutSelect.Selected, perChar, shouldStop)
+			canceled := shouldStop()
+
+			title := strings.TrimSpace(getWindowText(hwnd))
+			if title == "" {
+				title = curTitle
+			}
+			title = truncateRunes(title, 30)
+
+			fyne.Do(func() {
+				if canceled {
+					status.SetText("Typing stopped by user.")
+				} else if err != nil {
+					status.SetText("Error typing: " + err.Error())
+				} else {
+					status.SetText("Typed to: " + title)
+				}
+				setTypingUI(false)
+				setStopRequested(false)
+			})
+		}(hwnd, curTitle, txt, perChar)
 	})
 
-	typeClipboardBtn := widget.NewButton("Type Clipboard", func() {
+	// --- Type Clipboard Button ---
+	typeClipboardBtn = widget.NewButton("Type Clipboard", func() {
 		selected := windowSelect.Selected
 
 		laMu.RLock()
@@ -707,18 +1022,37 @@ func main() {
 			return
 		}
 
-		if err := sendText(txt, layoutSelect.Selected, 7*time.Millisecond); err != nil {
-			status.SetText("Error typing clipboard: " + err.Error())
-			return
-		}
+		perChar := getPerCharDelay(txt)
+		setStopRequested(false)
+		setTypingUI(true)
+		status.SetText("Typing clipboard...")
 
-		title := strings.TrimSpace(getWindowText(hwnd))
-		if title == "" {
-			title = curTitle
-		}
-		title = truncateRunes(title, 30)
-		status.SetText("Typed clipboard to: " + title)
+		go func(hwnd windows.Handle, curTitle string, txt string, perChar time.Duration) {
+			err := sendText(txt, layoutSelect.Selected, perChar, shouldStop)
+			canceled := shouldStop()
+
+			title := strings.TrimSpace(getWindowText(hwnd))
+			if title == "" {
+				title = curTitle
+			}
+			title = truncateRunes(title, 30)
+
+			fyne.Do(func() {
+				if canceled {
+					status.SetText("Typing stopped by user.")
+				} else if err != nil {
+					status.SetText("Error typing clipboard: " + err.Error())
+				} else {
+					status.SetText("Typed clipboard to: " + title)
+				}
+				setTypingUI(false)
+				setStopRequested(false)
+			})
+		}(hwnd, curTitle, txt, perChar)
 	})
+
+	// Action container that switches between [Type, Type Clipboard] and [Stop]
+	actionContainer = container.NewHBox(typeBtn, typeClipboardBtn)
 
 	// Left side: window selector + buttons
 	left := container.NewVBox(
@@ -728,10 +1062,14 @@ func main() {
 		lastActiveLabel,
 	)
 
-	// Right side: layout selector
+	// Right side: layout selector + typing speed controls
 	right := container.NewVBox(
 		widget.NewLabelWithStyle("Keyboard Layout", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		layoutSelect,
+		widget.NewSeparator(),
+		widget.NewLabelWithStyle("Typing Speed", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
+		speedSelect,
+		customMsEntry, // hidden unless Custom is selected
 	)
 
 	header := container.NewBorder(nil, nil, left, right, nil)
@@ -739,13 +1077,15 @@ func main() {
 	body := container.NewVBox(
 		widget.NewLabelWithStyle("Text to type", fyne.TextAlignLeading, fyne.TextStyle{Bold: true}),
 		inputRow,
-		container.NewHBox(typeBtn, typeClipboardBtn),
+		delayLabel,
+		actionContainer,
 		status,
 	)
 
 	content := container.NewBorder(header, nil, nil, nil, body)
 	w.SetContent(content)
 
+	updateDelayLabel()
 	refreshWindows()
 	w.ShowAndRun()
 }
